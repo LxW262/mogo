@@ -1,0 +1,381 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Moon, Utensils, Tv, Type, Pencil, Move, 
+  RotateCcw, Undo, Eraser, Minus, Plus 
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, doc, setDoc, onSnapshot 
+} from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+
+// --- Firebase 配置 ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'mogo-vibe-app';
+
+const App = () => {
+  // 基础状态
+  const [user, setUser] = useState(null);
+  
+  // 小猫 (User 1) 状态
+  const [catMood, setCatMood] = useState('吃饭');
+  const [catNote, setCatNote] = useState('');
+  
+  // 小狗 (User 2) 状态
+  const [dogMood, setDogMood] = useState('看剧');
+  const [dogNote, setDogNote] = useState('');
+
+  const [tool, setTool] = useState('move'); // move, text, pen, eraser
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [elements, setElements] = useState([]);
+  
+  // 画笔属性
+  const [penColor, setPenColor] = useState('#6366f1');
+  const [penWidth, setPenWidth] = useState(3);
+  
+  // 交互引用
+  const containerRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
+  const [currentPath, setCurrentPath] = useState(null);
+
+  // 状态图标定义
+  const moodIcons = {
+    '睡觉': Moon,
+    '吃饭': Utensils,
+    '看剧': Tv
+  };
+
+  const colors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#000000'];
+
+  // --- 1. Firebase 初始化与实时同步 ---
+  useEffect(() => {
+    document.title = "MoGo - 我们的专属互动空间";
+    
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Authentication failed:", err);
+      }
+    };
+    initAuth();
+    const unsubscribeAuth = onAuthStateChanged(auth, setUser);
+    return () => unsubscribeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'mogo_state', 'main');
+    
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.elements) setElements(data.elements);
+        
+        if (data.cat) {
+          setCatMood(data.cat.mood);
+          if (data.cat.note !== undefined) setCatNote(data.cat.note);
+        }
+        if (data.dog) {
+          setDogMood(data.dog.mood);
+          if (data.dog.note !== undefined) setDogNote(data.dog.note);
+        }
+      }
+    }, (err) => {
+      console.error("Firestore Listen Error:", err);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const syncToCloud = async (updates) => {
+    if (!user) return;
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'mogo_state', 'main');
+    
+    const payload = {
+      elements: updates.elements !== undefined ? updates.elements : elements,
+      cat: {
+        mood: updates.catMood !== undefined ? updates.catMood : catMood,
+        note: updates.catNote !== undefined ? updates.catNote : catNote
+      },
+      dog: {
+        mood: updates.dogMood !== undefined ? updates.dogMood : dogMood,
+        note: updates.dogNote !== undefined ? updates.dogNote : dogNote
+      },
+      lastUpdated: Date.now()
+    };
+
+    try {
+      await setDoc(docRef, payload, { merge: true });
+    } catch (err) {
+      console.error("Firestore Sync Error:", err);
+    }
+  };
+
+  // --- 2. 交互逻辑 ---
+  const handleMouseDown = (e) => {
+    // 确保点击的是画布本身而不是 UI 按钮
+    if (e.target.closest('header') || e.target.closest('.zoom-controls')) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left - offset.x) / scale;
+    const y = (e.clientY - rect.top - offset.y) / scale;
+
+    if (tool === 'move') {
+      setIsDragging(true);
+      setLastPos({ x: e.clientX, y: e.clientY });
+    } else if (tool === 'pen') {
+      setCurrentPath({ 
+        id: Date.now().toString(),
+        points: [{ x, y }], 
+        type: 'path', 
+        color: penColor, 
+        width: penWidth 
+      });
+    } else if (tool === 'eraser') {
+      const filtered = elements.filter(el => {
+        if (el.type !== 'path') return true;
+        return !el.points.some(p => Math.hypot(p.x - x, p.y - y) < 15 / scale);
+      });
+      setElements(filtered);
+      syncToCloud({ elements: filtered });
+    } else if (tool === 'text') {
+      // 在这里处理文字点击逻辑，直接弹出
+      const text = prompt('在此处输入内容:');
+      if (text) {
+        const newTextElement = { id: Date.now().toString(), type: 'text', x, y, content: text };
+        const newElements = [...elements, newTextElement];
+        setElements(newElements);
+        syncToCloud({ elements: newElements });
+      }
+    }
+  };
+
+  const handleMouseMove = (e) => {
+    if (isDragging && tool === 'move') {
+      const dx = e.clientX - lastPos.x;
+      const dy = e.clientY - lastPos.y;
+      setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+      setLastPos({ x: e.clientX, y: e.clientY });
+    } else if (currentPath && tool === 'pen') {
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = (e.clientX - rect.left - offset.x) / scale;
+      const y = (e.clientY - rect.top - offset.y) / scale;
+      setCurrentPath(prev => ({
+        ...prev,
+        points: [...prev.points, { x, y }]
+      }));
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    if (currentPath) {
+      const newElements = [...elements, currentPath];
+      setElements(newElements);
+      syncToCloud({ elements: newElements });
+      setCurrentPath(null);
+    }
+  };
+
+  const undo = () => {
+    if (elements.length === 0) return;
+    const newElements = elements.slice(0, -1);
+    setElements(newElements);
+    syncToCloud({ elements: newElements });
+  };
+
+  const renderPath = (path, isCurrent = false) => {
+    if (!path || path.points.length < 2) return null;
+    const d = `M ${path.points[0].x} ${path.points[0].y} ` + 
+              path.points.slice(1).map(p => `L ${p.x} ${p.y}`).join(' ');
+    return (
+      <path 
+        key={path.id || 'temp'} 
+        d={d} 
+        fill="none" 
+        stroke={path.color} 
+        strokeWidth={path.width} 
+        strokeLinecap="round" 
+        strokeJoin="round"
+        opacity={isCurrent ? 0.6 : 1}
+      />
+    );
+  };
+
+  return (
+    <div className="h-screen w-screen overflow-hidden bg-[#fafafa] flex flex-col font-sans select-none text-slate-800">
+      
+      {/* MoGo 独立导航栏 */}
+      <header className="py-4 bg-white/95 backdrop-blur-md border-b flex items-center justify-between px-8 z-50 shadow-sm">
+        
+        {/* 左侧：Logo 和 状态行 */}
+        <div className="flex items-center gap-8">
+          <div className="flex flex-col items-center">
+             <span className="text-3xl font-black tracking-tighter text-indigo-600 leading-none">MoGo</span>
+             <span className="text-[10px] font-bold text-slate-400 mt-1 uppercase tracking-widest text-center">Cloud Space</span>
+          </div>
+
+          <div className="flex flex-col gap-3 border-l pl-8 border-slate-200">
+            {/* 角色 1：小猫 */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-10 h-10 bg-orange-100 rounded-2xl shadow-sm border border-orange-200 text-2xl">🐱</div>
+              <div className="flex gap-1 bg-slate-50 p-1 rounded-full border">
+                {Object.keys(moodIcons).map(m => {
+                  const IconComp = moodIcons[m];
+                  return (
+                    <button
+                      key={`cat-${m}`}
+                      onClick={() => { setCatMood(m); syncToCloud({ catMood: m }); }}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition ${catMood === m ? 'bg-white shadow-sm text-orange-600 scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      <IconComp size={14} /> {m}
+                    </button>
+                  );
+                })}
+              </div>
+              <input 
+                type="text" 
+                placeholder="给小猫留言..." 
+                value={catNote}
+                onChange={(e) => setCatNote(e.target.value)}
+                onBlur={() => syncToCloud({ catNote })}
+                className="text-xs font-medium border-none bg-transparent focus:ring-0 text-slate-500 w-48 italic border-b border-transparent hover:border-slate-300 transition-colors"
+              />
+            </div>
+
+            {/* 角色 2：小狗 */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-2xl shadow-sm border border-blue-200 text-2xl">🐶</div>
+              <div className="flex gap-1 bg-slate-50 p-1 rounded-full border">
+                {Object.keys(moodIcons).map(m => {
+                  const IconComp = moodIcons[m];
+                  return (
+                    <button
+                      key={`dog-${m}`}
+                      onClick={() => { setDogMood(m); syncToCloud({ dogMood: m }); }}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition ${dogMood === m ? 'bg-white shadow-sm text-blue-600 scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      <IconComp size={14} /> {m}
+                    </button>
+                  );
+                })}
+              </div>
+              <input 
+                type="text" 
+                placeholder="给小狗留言..." 
+                value={dogNote}
+                onChange={(e) => setDogNote(e.target.value)}
+                onBlur={() => syncToCloud({ dogNote })}
+                className="text-xs font-medium border-none bg-transparent focus:ring-0 text-slate-500 w-48 italic border-b border-transparent hover:border-slate-300 transition-colors"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 右侧：工具栏 */}
+        <div className="flex items-center gap-4">
+          {tool === 'pen' && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-2xl border border-slate-200">
+              {colors.map(c => (
+                <button 
+                  key={c} 
+                  onClick={() => setPenColor(c)}
+                  className={`w-6 h-6 rounded-full border-2 transition-all ${penColor === c ? 'border-white ring-2 ring-indigo-400 scale-125' : 'border-transparent'}`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="flex bg-slate-100 rounded-2xl p-1.5 border border-slate-200 shadow-inner">
+            <button onClick={() => setTool('move')} className={`p-3 rounded-xl transition-all ${tool === 'move' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-400'}`} title="移动"><Move size={20} /></button>
+            <button onClick={() => setTool('text')} className={`p-3 rounded-xl transition-all ${tool === 'text' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-400'}`} title="文字"><Type size={20} /></button>
+            <button onClick={() => setTool('pen')} className={`p-3 rounded-xl transition-all ${tool === 'pen' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-400'}`} title="画笔"><Pencil size={20} /></button>
+            <button onClick={() => setTool('eraser')} className={`p-3 rounded-xl transition-all ${tool === 'eraser' ? 'bg-white shadow-md text-red-500' : 'text-slate-400'}`} title="橡皮擦"><Eraser size={20} /></button>
+          </div>
+
+          <div className="flex bg-slate-100 rounded-2xl p-1.5 border border-slate-200">
+            <button onClick={undo} className="p-3 text-slate-500 hover:bg-white rounded-xl transition-all" title="撤销"><Undo size={20} /></button>
+            <button onClick={() => {if(confirm('确定清空画布吗？')){setElements([]); syncToCloud({ elements: [] });}}} className="p-3 text-slate-500 hover:text-red-500 rounded-xl transition-all" title="清空"><RotateCcw size={20} /></button>
+          </div>
+        </div>
+      </header>
+
+      {/* 无边际画布 */}
+      <main 
+        ref={containerRef}
+        className={`flex-1 relative overflow-hidden transition-all ${tool === 'move' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onWheel={(e) => {
+          e.preventDefault();
+          const delta = -e.deltaY;
+          setScale(s => Math.min(Math.max(s + delta * 0.001, 0.2), 3));
+        }}
+      >
+        <div 
+          className="absolute inset-0 pointer-events-none transition-transform duration-75"
+          style={{
+            backgroundImage: 'radial-gradient(#cbd5e1 1.2px, transparent 1.2px)',
+            backgroundSize: `${24 * scale}px ${24 * scale}px`,
+            backgroundPosition: `${offset.x}px ${offset.y}px`,
+          }}
+        />
+
+        <div 
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: '0 0'
+          }}
+          className="absolute inset-0 pointer-events-none"
+        >
+          {/* 画笔 SVG 层 */}
+          <svg className="absolute inset-0 w-[20000px] h-[20000px] pointer-events-none">
+            {elements.filter(e => e.type === 'path').map(p => renderPath(p))}
+            {currentPath && renderPath(currentPath, true)}
+          </svg>
+
+          {/* 文字元素层 */}
+          {elements.filter(e => e.type === 'text').map((t) => (
+            <div 
+              key={t.id}
+              className="absolute pointer-events-auto bg-white/95 backdrop-blur-sm p-4 shadow-2xl rounded-2xl border border-slate-100 text-slate-700 min-w-[80px] max-w-sm whitespace-pre-wrap font-medium select-text"
+              style={{ 
+                left: t.x, 
+                top: t.y, 
+                transform: 'translate(-50%, -50%)',
+                zIndex: 10
+              }}
+            >
+              {t.content}
+            </div>
+          ))}
+        </div>
+
+        <div className="zoom-controls absolute bottom-8 left-8 flex flex-col gap-4">
+          <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-xl border border-slate-200 flex items-center gap-6 text-sm font-black text-slate-500">
+            <button onClick={() => setScale(s => Math.max(s - 0.2, 0.2))} className="hover:text-indigo-600"><Minus size={18} /></button>
+            <span className="w-14 text-center tabular-nums">{Math.round(scale * 100)}%</span>
+            <button onClick={() => setScale(s => Math.min(s + 0.2, 3))} className="hover:text-indigo-600"><Plus size={18} /></button>
+          </div>
+          {!user && <div className="text-[10px] bg-indigo-600 text-white px-4 py-2 rounded-full shadow-lg font-bold tracking-widest uppercase animate-pulse">MoGo Connecting...</div>}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export default App;
