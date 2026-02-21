@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoGo - 我们的专属互动空间</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+        .cursor-grab { cursor: grab; }
+        .cursor-grabbing { cursor: grabbing; }
+        .cursor-crosshair { cursor: crosshair; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // 模拟 Lucide 图标组件 (因为是CDN引入，直接使用原生SVG或Lucide渲染)
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const [svg, setSvg] = useState("");
+            useEffect(() => {
+                if (window.lucide) {
+                    const icon = window.lucide.icons[name];
+                    if (icon) {
+                        const svgString = icon.toSvg({ 
+                            width: size, 
+                            height: size, 
+                            'stroke-width': 2,
+                            class: className 
+                        });
+                        setSvg(svgString);
+                    }
+                }
+            }, [name, size, className]);
+            return <span dangerouslySetInnerHTML={{ __html: svg }} />;
+        };
+
+        const App = () => {
+            const [tool, setTool] = useState('move');
+            const [scale, setScale] = useState(1);
+            const [offset, setOffset] = useState({ x: 0, y: 0 });
+            const [elements, setElements] = useState([]);
+            const [isDragging, setIsDragging] = useState(false);
+            const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
+            const [currentPath, setCurrentPath] = useState(null);
+            const [penColor, setPenColor] = useState('#6366f1');
+            const containerRef = useRef(null);
+
+            const [catMood, setCatMood] = useState('吃饭');
+            const [dogMood, setDogMood] = useState('看剧');
+
+            const colors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#000000'];
+
+            const handleMouseDown = (e) => {
+                if (e.target.closest('header') || e.target.closest('.controls')) return;
+
+                const rect = containerRef.current.getBoundingClientRect();
+                const x = (e.clientX - rect.left - offset.x) / scale;
+                const y = (e.clientY - rect.top - offset.y) / scale;
+
+                if (tool === 'move') {
+                    setIsDragging(true);
+                    setLastPos({ x: e.clientX, y: e.clientY });
+                } else if (tool === 'pen') {
+                    setCurrentPath({ id: Date.now(), points: [{ x, y }], type: 'path', color: penColor, width: 3 });
+                } else if (tool === 'text') {
+                    const text = prompt('在此处输入内容:');
+                    if (text) {
+                        setElements([...elements, { id: Date.now(), type: 'text', x, y, content: text }]);
+                    }
+                } else if (tool === 'eraser') {
+                    const filtered = elements.filter(el => {
+                        if (el.type !== 'path') return true;
+                        return !el.points.some(p => Math.hypot(p.x - x, p.y - y) < 15 / scale);
+                    });
+                    setElements(filtered);
+                }
+            };
+
+            const handleMouseMove = (e) => {
+                if (isDragging && tool === 'move') {
+                    const dx = e.clientX - lastPos.x;
+                    const dy = e.clientY - lastPos.y;
+                    setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+                    setLastPos({ x: e.clientX, y: e.clientY });
+                } else if (currentPath && tool === 'pen') {
+                    const rect = containerRef.current.getBoundingClientRect();
+                    const x = (e.clientX - rect.left - offset.x) / scale;
+                    const y = (e.clientY - rect.top - offset.y) / scale;
+                    setCurrentPath(prev => ({ ...prev, points: [...prev.points, { x, y }] }));
+                }
+            };
+
+            const handleMouseUp = () => {
+                setIsDragging(false);
+                if (currentPath) {
+                    setElements([...elements, currentPath]);
+                    setCurrentPath(null);
+                }
+            };
+
+            return (
+                <div className="h-screen w-screen flex flex-col bg-slate-50 overflow-hidden">
+                    <header className="h-20 bg-white border-b flex items-center justify-between px-8 z-50 shadow-sm">
+                        <div className="flex items-center gap-6">
+                            <div className="text-2xl font-black text-indigo-600 tracking-tighter">MoGo</div>
+                            <div className="flex gap-4 border-l pl-6 items-center">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xl">🐱</span>
+                                    <select className="text-xs border-none bg-slate-100 rounded-lg p-1" value={catMood} onChange={e => setCatMood(e.target.value)}>
+                                        <option>吃饭</option><option>睡觉</option><option>看剧</option>
+                                    </select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xl">🐶</span>
+                                    <select className="text-xs border-none bg-slate-100 rounded-lg p-1" value={dogMood} onChange={e => setDogMood(e.target.value)}>
+                                        <option>吃饭</option><option>睡觉</option><option>看剧</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                            <div className="flex bg-slate-100 p-1 rounded-xl">
+                                <button onClick={() => setTool('move')} className={`p-2 rounded-lg ${tool === 'move' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}><Icon name="Move" /></button>
+                                <button onClick={() => setTool('text')} className={`p-2 rounded-lg ${tool === 'text' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}><Icon name="Type" /></button>
+                                <button onClick={() => setTool('pen')} className={`p-2 rounded-lg ${tool === 'pen' ? 'bg-white shadow text-indigo-600' : 'text-slate-400'}`}><Icon name="Pencil" /></button>
+                                <button onClick={() => setTool('eraser')} className={`p-2 rounded-lg ${tool === 'eraser' ? 'bg-white shadow text-red-500' : 'text-slate-400'}`}><Icon name="Eraser" /></button>
+                            </div>
+                            {tool === 'pen' && (
+                                <div className="flex gap-1">
+                                    {colors.map(c => <button key={c} onClick={() => setPenColor(c)} className="w-5 h-5 rounded-full border" style={{backgroundColor: c}} />)}
+                                </div>
+                            )}
+                        </div>
+                    </header>
+
+                    <main 
+                        ref={containerRef}
+                        className={`flex-1 relative ${tool === 'move' ? 'cursor-grab' : 'cursor-crosshair'}`}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                    >
+                        <div className="absolute inset-0 pointer-events-none" style={{
+                            backgroundImage: 'radial-gradient(#e2e8f0 1.5px, transparent 1.5px)',
+                            backgroundSize: `${20 * scale}px ${20 * scale}px`,
+                            backgroundPosition: `${offset.x}px ${offset.y}px`
+                        }} />
+
+                        <div style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`, transformOrigin: '0 0' }}>
+                            <svg className="absolute inset-0 w-[5000px] h-[5000px] pointer-events-none">
+                                {elements.filter(e => e.type === 'path').map(p => (
+                                    <path key={p.id} d={`M ${p.points[0].x} ${p.points[0].y} ` + p.points.slice(1).map(pt => `L ${pt.x} ${pt.y}`).join(' ')} fill="none" stroke={p.color} strokeWidth={p.width} strokeLinecap="round" />
+                                ))}
+                                {currentPath && (
+                                    <path d={`M ${currentPath.points[0].x} ${currentPath.points[0].y} ` + currentPath.points.slice(1).map(pt => `L ${pt.x} ${pt.y}`).join(' ')} fill="none" stroke={currentPath.color} strokeWidth={currentPath.width} strokeLinecap="round" opacity="0.5" />
+                                )}
+                            </svg>
+                            {elements.filter(e => e.type === 'text').map(t => (
+                                <div key={t.id} className="absolute bg-white p-3 shadow-lg rounded-xl border min-w-[50px]" style={{left: t.x, top: t.y, transform: 'translate(-50%, -50%)'}}>{t.content}</div>
+                            ))}
+                        </div>
+
+                        <div className="controls absolute bottom-6 left-6 bg-white p-2 rounded-xl shadow-xl flex gap-4 items-center text-xs font-bold text-slate-500">
+                            <button onClick={() => setScale(s => Math.max(0.2, s - 0.1))}><Icon name="Minus" size={16}/></button>
+                            <span className="w-10 text-center">{Math.round(scale * 100)}%</span>
+                            <button onClick={() => setScale(s => Math.min(3, s + 0.1))}><Icon name="Plus" size={16}/></button>
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
